@@ -37,11 +37,12 @@
     image-rendering: crisp-edges;
   }
   .legend {
-    display: flex;
-    gap: 24px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px 24px;
     margin-top: 16px;
-    flex-wrap: wrap;
-    justify-content: center;
+    max-width: 480px;
+    width: 100%;
   }
   .legend-item {
     display: flex;
@@ -127,16 +128,18 @@
   var done = false;
 
   var factions = [
-    { id: 1, name: 'Greedy',  desc: 'claims nearest empty cell', color: '#e8a87c', darkColor: '#c4835a', pct: 0 },
-    { id: 2, name: 'Spiral',  desc: 'clockwise wall-hugger',     color: '#555555', darkColor: '#2a2a2a', pct: 0 },
-    { id: 3, name: 'Hunter',  desc: 'hunts nearest enemy',       color: '#85b79d', darkColor: '#5a8a6e', pct: 0 },
-    { id: 4, name: 'Random',  desc: 'random walk',               color: '#c3a6d8', darkColor: '#9b7bb8', pct: 0 }
+    { id: 1, name: 'Greedy',  desc: 'claims most open space', color: '#e8a87c', darkColor: '#c4835a', pct: 0 },
+    { id: 2, name: 'Spiral',  desc: 'multi-head wall-hugger', color: '#555555', darkColor: '#2a2a2a', pct: 0 },
+    { id: 3, name: 'Hunter',  desc: 'hybrid expand + chase',  color: '#85b79d', darkColor: '#5a8a6e', pct: 0 },
+    { id: 4, name: 'Random',  desc: 'weighted random walk',   color: '#c3a6d8', darkColor: '#9b7bb8', pct: 0 }
   ];
 
   var BG_COLOR = '#f5f0e8';
   var BORDER_COLOR = '#333';
-  var spiralDirs = [[1,0],[0,1],[-1,0],[0,-1]];
-  var spiralState = { dir: 0, headX: 0, headY: 0 };
+  var DIR4 = [[1,0],[0,1],[-1,0],[0,-1]];
+
+  // Spiral: 3 independent heads
+  var spiralHeads = [];
 
   function idx(x, y) { return y * GRID_W + x; }
   function inBounds(x, y) { return x >= 0 && x < GRID_W && y >= 0 && y < GRID_H; }
@@ -148,6 +151,27 @@
     if (y > 0) n.push([x, y-1]);
     if (y < GRID_H-1) n.push([x, y+1]);
     return n;
+  }
+
+  // Get frontier cells (empty cells adjacent to faction territory)
+  function getFrontier(fid) {
+    var frontier = [];
+    var seen = {};
+    for (var y = 0; y < GRID_H; y++) {
+      for (var x = 0; x < GRID_W; x++) {
+        if (grid[idx(x, y)] !== fid) continue;
+        var nb = getNeighbors4(x, y);
+        for (var n = 0; n < nb.length; n++) {
+          var nx = nb[n][0], ny = nb[n][1];
+          var key = nx * GRID_H + ny;
+          if (grid[idx(nx, ny)] === 0 && !seen[key]) {
+            seen[key] = true;
+            frontier.push([nx, ny]);
+          }
+        }
+      }
+    }
+    return frontier;
   }
 
   function initGrid() {
@@ -170,44 +194,41 @@
         }
       }
     }
-    spiralState = { dir: 1, headX: GRID_W-2, headY: 1, stuck: 0 };
+    // Init 3 spiral heads near top-right corner
+    spiralHeads = [
+      { x: GRID_W-2, y: 1, dir: 1 },
+      { x: GRID_W-1, y: 1, dir: 2 },
+      { x: GRID_W-2, y: 0, dir: 0 }
+    ];
     document.getElementById('status').textContent = '';
   }
 
-  // GREEDY: expand toward most open space
+  // GREEDY: expand toward most open space (scores by empty neighbors)
   function greedyMove(fid) {
-    var frontier = [];
-    var seen = {};
-    for (var y = 0; y < GRID_H; y++) {
-      for (var x = 0; x < GRID_W; x++) {
-        if (grid[idx(x, y)] !== fid) continue;
-        var nb = getNeighbors4(x, y);
-        for (var n = 0; n < nb.length; n++) {
-          var nx = nb[n][0], ny = nb[n][1];
-          var key = nx * GRID_H + ny;
-          if (grid[idx(nx, ny)] === 0 && !seen[key]) {
-            seen[key] = true;
-            var score = 0;
-            var nn = getNeighbors4(nx, ny);
-            for (var j = 0; j < nn.length; j++) {
-              if (grid[idx(nn[j][0], nn[j][1])] === 0) score++;
-            }
-            frontier.push([nx, ny, score]);
-          }
-        }
+    var frontier = getFrontier(fid);
+    // Score each by open neighbors count
+    var scored = [];
+    for (var i = 0; i < frontier.length; i++) {
+      var fx = frontier[i][0], fy = frontier[i][1];
+      var score = 0;
+      var nb = getNeighbors4(fx, fy);
+      for (var j = 0; j < nb.length; j++) {
+        if (grid[idx(nb[j][0], nb[j][1])] === 0) score++;
       }
+      scored.push([fx, fy, score]);
     }
-    frontier.sort(function(a, b) { return b[2] - a[2]; });
-    var count = Math.min(3, frontier.length);
+    scored.sort(function(a, b) { return b[2] - a[2]; });
+    var count = Math.min(3, scored.length);
     for (var i = 0; i < count; i++) {
-      if (grid[idx(frontier[i][0], frontier[i][1])] === 0) {
-        grid[idx(frontier[i][0], frontier[i][1])] = fid;
+      if (grid[idx(scored[i][0], scored[i][1])] === 0) {
+        grid[idx(scored[i][0], scored[i][1])] = fid;
       }
     }
   }
 
-  // SPIRAL: clockwise wall-hugger
+  // SPIRAL: 3 independent wall-hugging heads
   function spiralMove(fid) {
+    // Get border cells for teleporting stuck heads
     var border = [];
     for (var y = 0; y < GRID_H; y++) {
       for (var x = 0; x < GRID_W; x++) {
@@ -223,116 +244,157 @@
     }
     if (border.length === 0) return;
 
-    var hx = spiralState.headX, hy = spiralState.headY;
-    var dir = spiralState.dir;
-    var claimed = 0;
-
-    for (var step = 0; step < 3; step++) {
+    // Each head claims 1 cell per tick (3 heads = 3 cells/tick)
+    for (var h = 0; h < spiralHeads.length; h++) {
+      var head = spiralHeads[h];
+      var hx = head.x, hy = head.y;
+      var dir = head.dir;
       var found = false;
-      for (var t = 0; t < 4; t++) {
+
+      // Try right-hand wall following: try turning right first, then straight, then left, then back
+      for (var t = 3; t < 7; t++) {
         var testDir = (dir + t) % 4;
-        var dx = spiralDirs[testDir][0], dy = spiralDirs[testDir][1];
+        var dx = DIR4[testDir][0], dy = DIR4[testDir][1];
         var nx = hx + dx, ny = hy + dy;
         if (inBounds(nx, ny) && grid[idx(nx, ny)] === 0) {
           grid[idx(nx, ny)] = fid;
-          hx = nx; hy = ny;
-          dir = (testDir + 3) % 4;
-          claimed++;
+          head.x = nx; head.y = ny;
+          head.dir = testDir;
           found = true;
           break;
         }
       }
-      if (!found) {
+
+      if (!found && border.length > 0) {
         // Teleport to random border cell
-        if (border.length > 0) {
-          var rb = border[Math.floor(Math.random() * border.length)];
-          var bnb = getNeighbors4(rb[0], rb[1]);
-          for (var b = 0; b < bnb.length; b++) {
-            if (grid[idx(bnb[b][0], bnb[b][1])] === 0) {
-              hx = bnb[b][0]; hy = bnb[b][1];
-              grid[idx(hx, hy)] = fid;
-              claimed++;
-              dir = Math.floor(Math.random() * 4);
-              break;
-            }
+        var rb = border[Math.floor(Math.random() * border.length)];
+        var bnb = getNeighbors4(rb[0], rb[1]);
+        // Shuffle to avoid bias
+        for (var si = bnb.length - 1; si > 0; si--) {
+          var sj = Math.floor(Math.random() * (si + 1));
+          var stmp = bnb[si]; bnb[si] = bnb[sj]; bnb[sj] = stmp;
+        }
+        for (var b = 0; b < bnb.length; b++) {
+          if (grid[idx(bnb[b][0], bnb[b][1])] === 0) {
+            head.x = bnb[b][0]; head.y = bnb[b][1];
+            grid[idx(head.x, head.y)] = fid;
+            head.dir = Math.floor(Math.random() * 4);
+            break;
           }
         }
       }
     }
-    spiralState.headX = hx;
-    spiralState.headY = hy;
-    spiralState.dir = dir;
   }
 
-  // HUNTER: chase nearest enemy territory
+  // HUNTER: hybrid — expand efficiently but gravitate toward enemy borders
   function hunterMove(fid) {
-    var frontier = [];
-    var seen = {};
-    for (var y = 0; y < GRID_H; y++) {
-      for (var x = 0; x < GRID_W; x++) {
-        if (grid[idx(x, y)] !== fid) continue;
-        var nb = getNeighbors4(x, y);
-        for (var n = 0; n < nb.length; n++) {
-          var nx = nb[n][0], ny = nb[n][1];
-          var key = nx * GRID_H + ny;
-          if (grid[idx(nx, ny)] === 0 && !seen[key]) {
-            seen[key] = true;
-            var minDist = 9999;
-            var scanR = 12;
-            for (var ey = Math.max(0, ny - scanR); ey < Math.min(GRID_H, ny + scanR); ey++) {
-              for (var ex = Math.max(0, nx - scanR); ex < Math.min(GRID_W, nx + scanR); ex++) {
-                var owner = grid[idx(ex, ey)];
-                if (owner > 0 && owner !== fid) {
-                  var d = Math.abs(ex - nx) + Math.abs(ey - ny);
-                  if (d < minDist) minDist = d;
-                }
-              }
-            }
-            frontier.push([nx, ny, minDist]);
+    var frontier = getFrontier(fid);
+    var scored = [];
+    for (var i = 0; i < frontier.length; i++) {
+      var fx = frontier[i][0], fy = frontier[i][1];
+      // Count empty neighbors (expansion value)
+      var emptyCount = 0;
+      var nb = getNeighbors4(fx, fy);
+      for (var j = 0; j < nb.length; j++) {
+        if (grid[idx(nb[j][0], nb[j][1])] === 0) emptyCount++;
+      }
+      // Find distance to nearest enemy (scan larger radius)
+      var minDist = 9999;
+      var scanR = 20;
+      for (var ey = Math.max(0, fy - scanR); ey < Math.min(GRID_H, fy + scanR); ey++) {
+        for (var ex = Math.max(0, fx - scanR); ex < Math.min(GRID_W, fx + scanR); ex++) {
+          var owner = grid[idx(ex, ey)];
+          if (owner > 0 && owner !== fid) {
+            var d = Math.abs(ex - fx) + Math.abs(ey - fy);
+            if (d < minDist) minDist = d;
           }
         }
       }
+      // Hybrid score: expand efficiently but prefer being near enemies
+      // Higher = better. emptyCount rewards open space, low dist rewards proximity to enemies
+      var distBonus = minDist < 9999 ? Math.max(0, 30 - minDist) : 0;
+      var score = emptyCount * 3 + distBonus;
+      scored.push([fx, fy, score]);
     }
-    frontier.sort(function(a, b) { return a[2] - b[2]; });
-    var count = Math.min(3, frontier.length);
+    scored.sort(function(a, b) { return b[2] - a[2]; });
+    var count = Math.min(3, scored.length);
     for (var i = 0; i < count; i++) {
-      if (grid[idx(frontier[i][0], frontier[i][1])] === 0) {
-        grid[idx(frontier[i][0], frontier[i][1])] = fid;
+      if (grid[idx(scored[i][0], scored[i][1])] === 0) {
+        grid[idx(scored[i][0], scored[i][1])] = fid;
       }
     }
   }
 
-  // RANDOM: random walk expansion
+  // RANDOM: weighted random — biased toward cells with more open neighbors
   function randomMove(fid) {
-    var frontier = [];
-    for (var y = 0; y < GRID_H; y++) {
-      for (var x = 0; x < GRID_W; x++) {
-        if (grid[idx(x, y)] !== fid) continue;
-        var nb = getNeighbors4(x, y);
-        for (var n = 0; n < nb.length; n++) {
-          if (grid[idx(nb[n][0], nb[n][1])] === 0) {
-            frontier.push(nb[n]);
-          }
-        }
+    var frontier = getFrontier(fid);
+    if (frontier.length === 0) return;
+    // Weight by open neighbors
+    var weighted = [];
+    for (var i = 0; i < frontier.length; i++) {
+      var fx = frontier[i][0], fy = frontier[i][1];
+      var w = 1;
+      var nb = getNeighbors4(fx, fy);
+      for (var j = 0; j < nb.length; j++) {
+        if (grid[idx(nb[j][0], nb[j][1])] === 0) w += 2;
       }
+      weighted.push([fx, fy, w]);
     }
-    for (var i = frontier.length - 1; i > 0; i--) {
-      var j = Math.floor(Math.random() * (i + 1));
-      var tmp = frontier[i]; frontier[i] = frontier[j]; frontier[j] = tmp;
-    }
+    // Weighted random selection (pick 3)
+    var claimed = 0;
     var seen = {};
-    var count = 0;
-    for (var i = 0; i < frontier.length && count < 3; i++) {
-      var key = frontier[i][0] * GRID_H + frontier[i][1];
-      if (!seen[key] && grid[idx(frontier[i][0], frontier[i][1])] === 0) {
-        seen[key] = true;
-        grid[idx(frontier[i][0], frontier[i][1])] = fid;
-        count++;
+    for (var pick = 0; pick < 3 && weighted.length > 0; pick++) {
+      var totalW = 0;
+      for (var i = 0; i < weighted.length; i++) totalW += weighted[i][2];
+      var r = Math.random() * totalW;
+      var cumul = 0;
+      for (var i = 0; i < weighted.length; i++) {
+        cumul += weighted[i][2];
+        if (cumul >= r) {
+          var cx = weighted[i][0], cy = weighted[i][1];
+          if (grid[idx(cx, cy)] === 0) {
+            grid[idx(cx, cy)] = fid;
+            claimed++;
+          }
+          weighted.splice(i, 1);
+          break;
+        }
       }
     }
   }
 
   var strategies = [greedyMove, spiralMove, hunterMove, randomMove];
+
+  // Territory capture: cells with 3+ enemy neighbors get flipped
+  function territoryCapture() {
+    var flips = [];
+    for (var y = 0; y < GRID_H; y++) {
+      for (var x = 0; x < GRID_W; x++) {
+        var owner = grid[idx(x, y)];
+        if (owner === 0) continue;
+        var nb = getNeighbors4(x, y);
+        // Count neighbors by faction
+        var counts = [0, 0, 0, 0];
+        for (var n = 0; n < nb.length; n++) {
+          var nOwner = grid[idx(nb[n][0], nb[n][1])];
+          if (nOwner > 0 && nOwner !== owner) {
+            counts[nOwner - 1]++;
+          }
+        }
+        // If 3+ neighbors belong to same enemy faction, flip
+        for (var f = 0; f < 4; f++) {
+          if (counts[f] >= 3) {
+            flips.push([x, y, f + 1]);
+            break;
+          }
+        }
+      }
+    }
+    // Apply flips
+    for (var i = 0; i < flips.length; i++) {
+      grid[idx(flips[i][0], flips[i][1])] = flips[i][2];
+    }
+  }
 
   function updateScores() {
     var counts = [0, 0, 0, 0];
@@ -368,7 +430,6 @@
       for (var x = 0; x < GRID_W; x++) {
         var owner = grid[idx(x, y)];
         if (owner === 0) continue;
-        // Border with different faction
         if (x < GRID_W - 1) {
           var right = grid[idx(x + 1, y)];
           if (right > 0 && right !== owner) {
@@ -381,12 +442,10 @@
             ctx.fillRect(x * CELL_PX, (y + 1) * CELL_PX - 1, CELL_PX, 2);
           }
         }
-        // Border with empty space
-        var hasEmptyNeighbor = false;
-        if (x > 0 && grid[idx(x-1, y)] === 0) { ctx.fillRect(x * CELL_PX, y * CELL_PX, 1, CELL_PX); hasEmptyNeighbor = true; }
-        if (x < GRID_W-1 && grid[idx(x+1, y)] === 0) { ctx.fillRect((x+1) * CELL_PX - 1, y * CELL_PX, 1, CELL_PX); hasEmptyNeighbor = true; }
-        if (y > 0 && grid[idx(x, y-1)] === 0) { ctx.fillRect(x * CELL_PX, y * CELL_PX, CELL_PX, 1); hasEmptyNeighbor = true; }
-        if (y < GRID_H-1 && grid[idx(x, y+1)] === 0) { ctx.fillRect(x * CELL_PX, (y+1) * CELL_PX - 1, CELL_PX, 1); hasEmptyNeighbor = true; }
+        if (x > 0 && grid[idx(x-1, y)] === 0) ctx.fillRect(x * CELL_PX, y * CELL_PX, 1, CELL_PX);
+        if (x < GRID_W-1 && grid[idx(x+1, y)] === 0) ctx.fillRect((x+1) * CELL_PX - 1, y * CELL_PX, 1, CELL_PX);
+        if (y > 0 && grid[idx(x, y-1)] === 0) ctx.fillRect(x * CELL_PX, y * CELL_PX, CELL_PX, 1);
+        if (y < GRID_H-1 && grid[idx(x, y+1)] === 0) ctx.fillRect(x * CELL_PX, (y+1) * CELL_PX - 1, CELL_PX, 1);
       }
     }
   }
@@ -415,6 +474,8 @@
     for (var t = 0; t < order.length; t++) {
       strategies[order[t]](order[t] + 1);
     }
+    // Territory capture phase — cells surrounded by enemies flip
+    territoryCapture();
     tick++;
     var empty = updateScores();
     if (empty === 0) {
