@@ -8,7 +8,7 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
-    touch-action: manipulation;
+    touch-action: none;
     -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;
@@ -532,6 +532,13 @@
   updateScores();
   frame();
 })();
+</script>
+<script>
+// Prevent double-tap zoom on iOS
+document.addEventListener('touchend', function(e) {
+  e.preventDefault();
+  e.target.click();
+}, {passive: false});
 </script>
 </body>
 </html>
