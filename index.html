@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Territory War</title>
+<base href="/territory-war/">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #f5f0e8;
+    font-family: -apple-system, 'Segoe UI', sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    min-height: 100dvh;
+    color: #333;
+    padding: 16px;
+  }
+  h1 {
+    font-size: 1.6rem;
+    font-weight: 700;
+    margin-bottom: 2px;
+    letter-spacing: -0.5px;
+  }
+  .subtitle {
+    font-size: 0.85rem;
+    color: #999;
+    margin-bottom: 16px;
+  }
+  canvas {
+    border: 2px solid #ddd;
+    border-radius: 4px;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+  .legend {
+    display: flex;
+    gap: 24px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+  }
+  .legend-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(0,0,0,0.15);
+    flex-shrink: 0;
+  }
+  .legend-name {
+    font-weight: 600;
+    color: #555;
+  }
+  .legend-desc {
+    color: #999;
+    font-size: 0.75rem;
+  }
+  .legend-pct {
+    font-weight: 700;
+    font-size: 0.95rem;
+    min-width: 36px;
+    text-align: right;
+  }
+  .controls {
+    margin-top: 14px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  button {
+    background: #e8e3da;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    padding: 6px 16px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.15s;
+  }
+  button:hover { background: #ddd8ce; }
+  .status {
+    font-size: 0.8rem;
+    color: #999;
+    margin-top: 8px;
+    height: 20px;
+  }
+</style>
+</head>
+<body>
+<h1>Territory War</h1>
+<p class="subtitle">4 strategies fight for space</p>
+<canvas id="grid"></canvas>
+<div class="legend" id="legend"></div>
+<div class="controls">
+  <button id="btnReset">Reset</button>
+  <button id="btnPause">Pause</button>
+  <button id="btnSpeed">Speed: 1x</button>
+</div>
+<div class="status" id="status"></div>
+<script>
+(function() {
+  var GRID_W = 80, GRID_H = 80;
+  var maxCanvasSize = Math.min(window.innerWidth - 40, window.innerHeight - 220, 560);
+  var CELL_PX = Math.max(3, Math.floor(maxCanvasSize / GRID_W));
+  var canvas = document.getElementById('grid');
+  var ctx = canvas.getContext('2d');
+  canvas.width = GRID_W * CELL_PX;
+  canvas.height = GRID_H * CELL_PX;
+  canvas.style.width = canvas.width + 'px';
+  canvas.style.height = canvas.height + 'px';
+
+  var grid = new Uint8Array(GRID_W * GRID_H);
+  var tick = 0;
+  var paused = false;
+  var speed = 1;
+  var speeds = [1, 2, 5, 10];
+  var speedIdx = 0;
+  var done = false;
+
+  var factions = [
+    { id: 1, name: 'Greedy',  desc: 'claims nearest empty cell', color: '#e8a87c', darkColor: '#c4835a', pct: 0 },
+    { id: 2, name: 'Spiral',  desc: 'clockwise wall-hugger',     color: '#555555', darkColor: '#2a2a2a', pct: 0 },
+    { id: 3, name: 'Hunter',  desc: 'hunts nearest enemy',       color: '#85b79d', darkColor: '#5a8a6e', pct: 0 },
+    { id: 4, name: 'Random',  desc: 'random walk',               color: '#c3a6d8', darkColor: '#9b7bb8', pct: 0 }
+  ];
+
+  var BG_COLOR = '#f5f0e8';
+  var BORDER_COLOR = '#333';
+  var spiralDirs = [[1,0],[0,1],[-1,0],[0,-1]];
+  var spiralState = { dir: 0, headX: 0, headY: 0 };
+
+  function idx(x, y) { return y * GRID_W + x; }
+  function inBounds(x, y) { return x >= 0 && x < GRID_W && y >= 0 && y < GRID_H; }
+
+  function getNeighbors4(x, y) {
+    var n = [];
+    if (x > 0) n.push([x-1, y]);
+    if (x < GRID_W-1) n.push([x+1, y]);
+    if (y > 0) n.push([x, y-1]);
+    if (y < GRID_H-1) n.push([x, y+1]);
+    return n;
+  }
+
+  function initGrid() {
+    grid.fill(0);
+    tick = 0;
+    done = false;
+    var starts = [
+      [0, 0],
+      [GRID_W-1, 0],
+      [GRID_W-1, GRID_H-1],
+      [0, GRID_H-1]
+    ];
+    for (var i = 0; i < 4; i++) {
+      var sx = starts[i][0], sy = starts[i][1];
+      for (var dy = -1; dy <= 1; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+          var nx = Math.max(0, Math.min(GRID_W-1, sx + dx));
+          var ny = Math.max(0, Math.min(GRID_H-1, sy + dy));
+          grid[idx(nx, ny)] = i + 1;
+        }
+      }
+    }
+    spiralState = { dir: 1, headX: GRID_W-2, headY: 1, stuck: 0 };
+    document.getElementById('status').textContent = '';
+  }
+
+  // GREEDY: expand toward most open space
+  function greedyMove(fid) {
+    var frontier = [];
+    var seen = {};
+    for (var y = 0; y < GRID_H; y++) {
+      for (var x = 0; x < GRID_W; x++) {
+        if (grid[idx(x, y)] !== fid) continue;
+        var nb = getNeighbors4(x, y);
+        for (var n = 0; n < nb.length; n++) {
+          var nx = nb[n][0], ny = nb[n][1];
+          var key = nx * GRID_H + ny;
+          if (grid[idx(nx, ny)] === 0 && !seen[key]) {
+            seen[key] = true;
+            var score = 0;
+            var nn = getNeighbors4(nx, ny);
+            for (var j = 0; j < nn.length; j++) {
+              if (grid[idx(nn[j][0], nn[j][1])] === 0) score++;
+            }
+            frontier.push([nx, ny, score]);
+          }
+        }
+      }
+    }
+    frontier.sort(function(a, b) { return b[2] - a[2]; });
+    var count = Math.min(3, frontier.length);
+    for (var i = 0; i < count; i++) {
+      if (grid[idx(frontier[i][0], frontier[i][1])] === 0) {
+        grid[idx(frontier[i][0], frontier[i][1])] = fid;
+      }
+    }
+  }
+
+  // SPIRAL: clockwise wall-hugger
+  function spiralMove(fid) {
+    var border = [];
+    for (var y = 0; y < GRID_H; y++) {
+      for (var x = 0; x < GRID_W; x++) {
+        if (grid[idx(x, y)] !== fid) continue;
+        var nb = getNeighbors4(x, y);
+        for (var n = 0; n < nb.length; n++) {
+          if (grid[idx(nb[n][0], nb[n][1])] === 0) {
+            border.push([x, y]);
+            break;
+          }
+        }
+      }
+    }
+    if (border.length === 0) return;
+
+    var hx = spiralState.headX, hy = spiralState.headY;
+    var dir = spiralState.dir;
+    var claimed = 0;
+
+    for (var step = 0; step < 3; step++) {
+      var found = false;
+      for (var t = 0; t < 4; t++) {
+        var testDir = (dir + t) % 4;
+        var dx = spiralDirs[testDir][0], dy = spiralDirs[testDir][1];
+        var nx = hx + dx, ny = hy + dy;
+        if (inBounds(nx, ny) && grid[idx(nx, ny)] === 0) {
+          grid[idx(nx, ny)] = fid;
+          hx = nx; hy = ny;
+          dir = (testDir + 3) % 4;
+          claimed++;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        // Teleport to random border cell
+        if (border.length > 0) {
+          var rb = border[Math.floor(Math.random() * border.length)];
+          var bnb = getNeighbors4(rb[0], rb[1]);
+          for (var b = 0; b < bnb.length; b++) {
+            if (grid[idx(bnb[b][0], bnb[b][1])] === 0) {
+              hx = bnb[b][0]; hy = bnb[b][1];
+              grid[idx(hx, hy)] = fid;
+              claimed++;
+              dir = Math.floor(Math.random() * 4);
+              break;
+            }
+          }
+        }
+      }
+    }
+    spiralState.headX = hx;
+    spiralState.headY = hy;
+    spiralState.dir = dir;
+  }
+
+  // HUNTER: chase nearest enemy territory
+  function hunterMove(fid) {
+    var frontier = [];
+    var seen = {};
+    for (var y = 0; y < GRID_H; y++) {
+      for (var x = 0; x < GRID_W; x++) {
+        if (grid[idx(x, y)] !== fid) continue;
+        var nb = getNeighbors4(x, y);
+        for (var n = 0; n < nb.length; n++) {
+          var nx = nb[n][0], ny = nb[n][1];
+          var key = nx * GRID_H + ny;
+          if (grid[idx(nx, ny)] === 0 && !seen[key]) {
+            seen[key] = true;
+            var minDist = 9999;
+            var scanR = 12;
+            for (var ey = Math.max(0, ny - scanR); ey < Math.min(GRID_H, ny + scanR); ey++) {
+              for (var ex = Math.max(0, nx - scanR); ex < Math.min(GRID_W, nx + scanR); ex++) {
+                var owner = grid[idx(ex, ey)];
+                if (owner > 0 && owner !== fid) {
+                  var d = Math.abs(ex - nx) + Math.abs(ey - ny);
+                  if (d < minDist) minDist = d;
+                }
+              }
+            }
+            frontier.push([nx, ny, minDist]);
+          }
+        }
+      }
+    }
+    frontier.sort(function(a, b) { return a[2] - b[2]; });
+    var count = Math.min(3, frontier.length);
+    for (var i = 0; i < count; i++) {
+      if (grid[idx(frontier[i][0], frontier[i][1])] === 0) {
+        grid[idx(frontier[i][0], frontier[i][1])] = fid;
+      }
+    }
+  }
+
+  // RANDOM: random walk expansion
+  function randomMove(fid) {
+    var frontier = [];
+    for (var y = 0; y < GRID_H; y++) {
+      for (var x = 0; x < GRID_W; x++) {
+        if (grid[idx(x, y)] !== fid) continue;
+        var nb = getNeighbors4(x, y);
+        for (var n = 0; n < nb.length; n++) {
+          if (grid[idx(nb[n][0], nb[n][1])] === 0) {
+            frontier.push(nb[n]);
+          }
+        }
+      }
+    }
+    for (var i = frontier.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = frontier[i]; frontier[i] = frontier[j]; frontier[j] = tmp;
+    }
+    var seen = {};
+    var count = 0;
+    for (var i = 0; i < frontier.length && count < 3; i++) {
+      var key = frontier[i][0] * GRID_H + frontier[i][1];
+      if (!seen[key] && grid[idx(frontier[i][0], frontier[i][1])] === 0) {
+        seen[key] = true;
+        grid[idx(frontier[i][0], frontier[i][1])] = fid;
+        count++;
+      }
+    }
+  }
+
+  var strategies = [greedyMove, spiralMove, hunterMove, randomMove];
+
+  function updateScores() {
+    var counts = [0, 0, 0, 0];
+    var total = GRID_W * GRID_H;
+    for (var i = 0; i < grid.length; i++) {
+      if (grid[i] > 0) counts[grid[i] - 1]++;
+    }
+    var empty = total;
+    for (var f = 0; f < 4; f++) {
+      factions[f].pct = Math.round(counts[f] / total * 100);
+      empty -= counts[f];
+    }
+    return empty;
+  }
+
+  function drawGrid() {
+    ctx.fillStyle = BG_COLOR;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    for (var y = 0; y < GRID_H; y++) {
+      for (var x = 0; x < GRID_W; x++) {
+        var owner = grid[idx(x, y)];
+        if (owner > 0) {
+          ctx.fillStyle = factions[owner - 1].color;
+          ctx.fillRect(x * CELL_PX, y * CELL_PX, CELL_PX, CELL_PX);
+        }
+      }
+    }
+
+    // Territory borders
+    ctx.fillStyle = BORDER_COLOR;
+    for (var y = 0; y < GRID_H; y++) {
+      for (var x = 0; x < GRID_W; x++) {
+        var owner = grid[idx(x, y)];
+        if (owner === 0) continue;
+        // Border with different faction
+        if (x < GRID_W - 1) {
+          var right = grid[idx(x + 1, y)];
+          if (right > 0 && right !== owner) {
+            ctx.fillRect((x + 1) * CELL_PX - 1, y * CELL_PX, 2, CELL_PX);
+          }
+        }
+        if (y < GRID_H - 1) {
+          var below = grid[idx(x, y + 1)];
+          if (below > 0 && below !== owner) {
+            ctx.fillRect(x * CELL_PX, (y + 1) * CELL_PX - 1, CELL_PX, 2);
+          }
+        }
+        // Border with empty space
+        var hasEmptyNeighbor = false;
+        if (x > 0 && grid[idx(x-1, y)] === 0) { ctx.fillRect(x * CELL_PX, y * CELL_PX, 1, CELL_PX); hasEmptyNeighbor = true; }
+        if (x < GRID_W-1 && grid[idx(x+1, y)] === 0) { ctx.fillRect((x+1) * CELL_PX - 1, y * CELL_PX, 1, CELL_PX); hasEmptyNeighbor = true; }
+        if (y > 0 && grid[idx(x, y-1)] === 0) { ctx.fillRect(x * CELL_PX, y * CELL_PX, CELL_PX, 1); hasEmptyNeighbor = true; }
+        if (y < GRID_H-1 && grid[idx(x, y+1)] === 0) { ctx.fillRect(x * CELL_PX, (y+1) * CELL_PX - 1, CELL_PX, 1); hasEmptyNeighbor = true; }
+      }
+    }
+  }
+
+  function updateLegend() {
+    var html = '';
+    for (var i = 0; i < factions.length; i++) {
+      var f = factions[i];
+      html += '<div class="legend-item">' +
+        '<div class="legend-swatch" style="background:' + f.color + '"></div>' +
+        '<div><span class="legend-name">' + f.name + '</span><br>' +
+        '<span class="legend-desc">' + f.desc + '</span></div>' +
+        '<span class="legend-pct" style="color:' + f.darkColor + '">' + f.pct + '%</span>' +
+        '</div>';
+    }
+    document.getElementById('legend').innerHTML = html;
+  }
+
+  function gameTick() {
+    if (done) return;
+    var order = [0, 1, 2, 3];
+    for (var i = 3; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = order[i]; order[i] = order[j]; order[j] = tmp;
+    }
+    for (var t = 0; t < order.length; t++) {
+      strategies[order[t]](order[t] + 1);
+    }
+    tick++;
+    var empty = updateScores();
+    if (empty === 0) {
+      done = true;
+      var maxPct = 0, winner = '';
+      for (var i = 0; i < factions.length; i++) {
+        if (factions[i].pct > maxPct) { maxPct = factions[i].pct; winner = factions[i].name; }
+      }
+      document.getElementById('status').textContent = winner + ' wins with ' + maxPct + '% — ' + tick + ' ticks';
+    } else {
+      document.getElementById('status').textContent = 'Tick ' + tick + ' — ' + empty + ' cells remaining';
+    }
+  }
+
+  var frameCount = 0;
+  function frame() {
+    frameCount++;
+    if (!paused && !done && frameCount % 3 === 0) {
+      for (var s = 0; s < speed; s++) {
+        gameTick();
+        if (done) break;
+      }
+    }
+    drawGrid();
+    updateLegend();
+    requestAnimationFrame(frame);
+  }
+
+  document.getElementById('btnReset').addEventListener('click', function() {
+    initGrid();
+    done = false;
+  });
+  document.getElementById('btnPause').addEventListener('click', function() {
+    paused = !paused;
+    document.getElementById('btnPause').textContent = paused ? 'Play' : 'Pause';
+  });
+  document.getElementById('btnSpeed').addEventListener('click', function() {
+    speedIdx = (speedIdx + 1) % speeds.length;
+    speed = speeds[speedIdx];
+    document.getElementById('btnSpeed').textContent = 'Speed: ' + speed + 'x';
+  });
+
+  initGrid();
+  updateScores();
+  frame();
+})();
+</script>
+</body>
+</html>
