@@ -2,11 +2,21 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Territory War</title>
 <base href="/territory-war/">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    touch-action: manipulation;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  canvas {
+    touch-action: none;
+  }
   body {
     background: #f5f0e8;
     font-family: -apple-system, 'Segoe UI', sans-serif;
