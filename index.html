@@ -322,8 +322,8 @@
       }
       // Hybrid score: expand efficiently but prefer being near enemies
       // Higher = better. emptyCount rewards open space, low dist rewards proximity to enemies
-      var distBonus = minDist < 9999 ? Math.max(0, 30 - minDist) : 0;
-      var score = emptyCount * 3 + distBonus;
+      var distBonus = minDist < 9999 ? Math.max(0, 20 - minDist) : 0;
+      var score = emptyCount * 4 + distBonus;
       scored.push([fx, fy, score]);
     }
     scored.sort(function(a, b) { return b[2] - a[2]; });
